@@ -49,7 +49,10 @@ class ProxyHandler(tornado.web.RequestHandler):
                 self.set_status(500)
                 self.write('Internal server error:\n' + str(response.error))
             else:
-                self.set_status(response.code)
+                if (response.code == 599):
+                    self.set_status(500)
+                else:
+                    self.set_status(response.code)
                 for header in ('Date', 'Cache-Control', 'Server',
                         'Content-Type', 'Location'):
                     v = response.headers.get(header)
