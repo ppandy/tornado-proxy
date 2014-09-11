@@ -33,13 +33,55 @@ import tornado.ioloop
 import tornado.iostream
 import tornado.web
 import tornado.httpclient
+import redis
+import time
+import json
 
 __all__ = ['ProxyHandler', 'run_proxy']
 
+class Scope(object):
 
+    session = None
+    key = "proxy_request"
+    timeout = 10
+    REDIS_HOST = '127.0.0.1'
+    REDIS_PORT = 6379
+    
+    def __init__(self):
+        self.r = redis.StrictRedis(host=self.REDIS_HOST, port=self.REDIS_PORT, db=0)
+        self.session = 1
+        self.set_expire()
+        #self.cache = []
+        #self.cache_size = 200
+    
+    def add_request(self,request):
+        self.r.zadd(self.key+"::"+str(scope.session), time.time(), json.dumps(request))
+                
+    def increment_session(self):
+        self.session += 1
+        print "SESSION::" + str(self.session)
+        self.set_expire()
+         
+    def reset_session(self):
+        self.session = 1
+        print "SESSION::" + str(self.session)
+        self.set_expire()
+        
+    def set_expire(self):
+        self.r.expire(self.key+"::"+str(self.session),self.timeout)
+        
+scope = Scope()    
+    
 class ProxyHandler(tornado.web.RequestHandler):
     SUPPORTED_METHODS = ['GET', 'POST', 'CONNECT']
-
+    LIMIT_HEADERS = False
+    SUPPORTED_HEADERS = ('Date', 'Cache-Control', 'Server',
+                        'Content-Type', 'Location',
+                        'Accept-Ranges',
+                        'X-Powered-By','Set-Cookie','Expires','P3p',
+                        'Pragma','Last-Modified','Etag',)
+    DEBUG = False
+    
     @tornado.web.asynchronous
     def get(self):
 
@@ -53,8 +95,7 @@ class ProxyHandler(tornado.web.RequestHandler):
                     self.set_status(500)
                 else:
                     self.set_status(response.code)
-                for header in ('Date', 'Cache-Control', 'Server',
-                        'Content-Type', 'Location'):
+                for header in self.SUPPORTED_HEADERS:
                     v = response.headers.get(header)
                     if v:
                         self.set_header(header, v)
@@ -67,8 +108,20 @@ class ProxyHandler(tornado.web.RequestHandler):
             headers=self.request.headers, follow_redirects=False,
             allow_nonstandard_methods=True)
 
+        request = "%s\t%s" % (self.request.method,self.request.uri)
+        if self.DEBUG:
+            print request
+        
+        if self.request.uri[-13:] == "/proxy/finish":
+            scope.increment_session()
+            self.set_status(200)
+            self.finish()
+            return
+        
         client = tornado.httpclient.AsyncHTTPClient()
         try:
+            request = {"method":self.request.method,"uri":self.request.uri,"session":scope.session}
+            scope.add_request(request)
             client.fetch(req, handle_response)
         except tornado.httpclient.HTTPError as e:
             if hasattr(e, 'response') and e.response:
