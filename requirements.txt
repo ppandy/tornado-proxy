@@ -1,2 +1,4 @@
-tornado==2.2
+tornado==3.1
 redis
+git+https://github.com/saghul/tornado-pyuv.git
+

@@ -14,10 +14,6 @@ import tornado.ioloop
 import tornado.iostream
 import tornado.tcpserver
 
-import redis
-import time
-import json
-
 @tornado.gen.coroutine
 def read_until(stream, delimiter, _idalloc=itertools.count()):
     cb_id = next(_idalloc)
@@ -29,78 +25,45 @@ def read_until(stream, delimiter, _idalloc=itertools.count()):
 def write(stream, data):
     return tornado.gen.Task(stream.write, data)
 
-class Scope(object):
-
-    session = None
-    first = True
-    key = "proxy_request"
-    timeout = 10
-    REDIS_HOST = '127.0.0.1'
-    REDIS_PORT = 6379
-    
-    def __init__(self):
-        self.r = redis.StrictRedis(host=self.REDIS_HOST, port=self.REDIS_PORT, db=0)
-        self.session = 1
-        self.r.set(self.key,self.session)
-        #self.r.zremrangebyrank(self.key+"::"+str(self.session),0,-1)
-        self.set_expire()
-        #self.cache = []
-        #self.cache_size = 200
-    
-    def add_request(self,status,request):
-        #print ("Adding Record for Session %s of %s") % (scope.session, status)
-        self.r.zadd(self.key+"::"+str(status)+"::"+str(scope.session), time.time(), json.dumps(request))
-                
-    def increment_session(self):
-        self.session += 1
-        self.r.set(self.key,self.session)
-        self.set_expire()
-         
-    def reset_session(self):
-        self.session = 1
-        self.set_expire()
-        
-    def set_expire(self):
-        self.r.expire(self.key+"::"+str(self.session),self.timeout)
-        
-scope = Scope() 
-
 class SimpleEcho(object):
     """
         Per-connection object.
     """
 
-    @tornado.gen.coroutine
-    def on_connect(self):
-        yield self.dispatch()
+    def __init__(self, client_id):
+        self.client_id = client_id
+        self.message_id_alloc = itertools.count(1)
         return
 
     @tornado.gen.coroutine
     def on_disconnect(self):
+        self.log("on_disconnect")
         yield []
+        self.log("on_disconnect done")
         return
 
     @tornado.gen.coroutine
     def dispatch(self):
         try:
             while True:
+                self.log("waiting for line on stream {}", self.stream)
                 line = yield read_until(self.stream, "\n")
-                obj = line.split()
-                #print obj
-                request = {"method":obj[5],"uri":obj[6],"session":1,"time":obj[0]}
-                #request = {"method":obj[0],"uri":obj[1],"session":1}
-                status = obj[3].split('/')
-                #print status
-                scope.add_request(status[1], request)
-                #scope.add_request(200, request)
-                #self.log("{}", repr(line))
-                #yield write(line)
+                message_id = next(self.message_id_alloc)
+                self.log("got line {}: {}", message_id, repr(line))
+                yield write(self.stream, line)
         except tornado.iostream.StreamClosedError:
             pass
         return
 
+    @tornado.gen.coroutine
+    def on_connect(self):
+        self.log("on_connect")
+        yield self.dispatch()
+        self.log("on_connect done")
+        return
+
     def log(self, msg, *args, **kwargs):
-        print "{}".format(msg.format(*args, **kwargs))
+        print "[{}]: {}".format(self.client_id, msg.format(*args, **kwargs))
         return
 
 class SimpleEchoServer(tornado.tcpserver.TCPServer):
@@ -118,18 +81,31 @@ class SimpleEchoServer(tornado.tcpserver.TCPServer):
 
     @tornado.gen.coroutine
     def handle_stream(self, stream, address):
+        print "begin handle_stream"
+        client_id = next(self.client_id_alloc)
 
-        conn = SimpleEcho()
+        print "got id", client_id
+
+        print "creating conn"
+        conn = SimpleEcho(client_id)
+
         stream.set_close_callback(conn.on_disconnect)
         stream.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
         stream.socket.setsockopt(socket.IPPROTO_TCP, socket.SO_KEEPALIVE, 1)
+
         conn.stream = stream
+
+        print "yielding to conn.on_connect()"
+
         yield conn.on_connect()
+
+        print "exiting handle_stream"
+
         return
 
 if __name__ == "__main__":
 
     server = SimpleEchoServer()
-    server.listen(8889)
+    server.listen(1234)
 
     tornado.ioloop.IOLoop.instance().start()

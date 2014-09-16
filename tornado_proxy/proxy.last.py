@@ -1,10 +1,7 @@
 
 """
 A simple echo server for telnet, implemented using tornado.gen
-
-echo -e 'hello\nworld\n' | nc 127.0.0.1 8889
 """
-
 
 import itertools
 import socket
@@ -13,21 +10,9 @@ import tornado.gen
 import tornado.ioloop
 import tornado.iostream
 import tornado.tcpserver
-
 import redis
 import time
 import json
-
-@tornado.gen.coroutine
-def read_until(stream, delimiter, _idalloc=itertools.count()):
-    cb_id = next(_idalloc)
-    cb = yield tornado.gen.Callback(cb_id)
-    stream.read_until(delimiter, cb)
-    result = yield tornado.gen.Wait(cb_id)
-    raise tornado.gen.Return(result)
-
-def write(stream, data):
-    return tornado.gen.Task(stream.write, data)
 
 class Scope(object):
 
@@ -65,10 +50,22 @@ class Scope(object):
         
 scope = Scope() 
 
+@tornado.gen.coroutine
+def read_until(stream, delimiter, _idalloc=itertools.count()):
+    cb_id = next(_idalloc)
+    cb = yield tornado.gen.Callback(cb_id)
+    stream.read_until(delimiter, cb)
+    result = yield tornado.gen.Wait(cb_id)
+    raise tornado.gen.Return(result)
+
+def write(stream, data):
+    return tornado.gen.Task(stream.write, data)
+    
 class SimpleEcho(object):
     """
         Per-connection object.
     """
+    DEBUG = True
 
     @tornado.gen.coroutine
     def on_connect(self):
@@ -84,17 +81,12 @@ class SimpleEcho(object):
     def dispatch(self):
         try:
             while True:
-                line = yield read_until(self.stream, "\n")
-                obj = line.split()
-                #print obj
-                request = {"method":obj[5],"uri":obj[6],"session":1,"time":obj[0]}
-                #request = {"method":obj[0],"uri":obj[1],"session":1}
-                status = obj[3].split('/')
-                #print status
-                scope.add_request(status[1], request)
-                #scope.add_request(200, request)
-                #self.log("{}", repr(line))
-                #yield write(line)
+                line = yield read_until(self.stream,"\n")
+                obj = line.split(' ')
+                request = {"method":obj[9],"uri":obj[10],"session":1}
+                scope.add_request(obj[7].replace('TCP_MISS/',''), request)
+                if self.DEBUG:
+                    yield write("{}", repr(line))
         except tornado.iostream.StreamClosedError:
             pass
         return
@@ -113,12 +105,11 @@ class SimpleEchoServer(tornado.tcpserver.TCPServer):
         tornado.tcpserver.TCPServer.__init__(self,
             io_loop=io_loop, ssl_options=ssl_options, max_buffer_size=max_buffer_size)
 
-        self.client_id_alloc = itertools.count(1)
         return
 
     @tornado.gen.coroutine
     def handle_stream(self, stream, address):
-
+        
         conn = SimpleEcho()
         stream.set_close_callback(conn.on_disconnect)
         stream.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
